@@ -1,8 +1,12 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
+import passport from "./config/passport.js";
 import logger from "./utils/logger.js";
 import prisma from "./config/db.js";
+import testRoutes from "./routes/testRoutes.js";
+import authRoutes from "./routes/authRoutes.js";
 
 const app = express();
 
@@ -13,8 +17,14 @@ app.use(
     credentials: true,
   })
 );
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(passport.initialize());
+
+// Routes
+app.use("/api/v1/test", testRoutes);
+app.use("/api/v1/auth", authRoutes);
 
 // Request logging middleware
 app.use((req, res, next) => {
