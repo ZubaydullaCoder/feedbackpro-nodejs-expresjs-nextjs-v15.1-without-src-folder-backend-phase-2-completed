@@ -1,68 +1,114 @@
 import prisma from "../config/db.js";
-import { hashPassword } from "../utils/hashPassword.js";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import logger from "../utils/logger.js";
+import { hashPassword } from "../utils/hashPassword.js";
 
-export class AuthService {
-  static async registerUser(data) {
-    const { email, password, business } = data;
+export const registerUser = async (data) => {
+  const { email, password, business } = data;
 
-    try {
-      // Check if email exists
-      const existingUser = await prisma.user.findUnique({
-        where: { email },
+  try {
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      throw new Error("EMAIL_EXISTS");
+    }
+
+    const hashedPassword = await hashPassword(password);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          email,
+          hashedPassword,
+          role: "BUSINESS_OWNER",
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+        },
       });
 
-      if (existingUser) {
-        throw new Error("EMAIL_EXISTS");
-      }
+      const createdBusiness = await tx.business.create({
+        data: {
+          name: business.name,
+          description: business.description,
+          userId: user.id,
+        },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+        },
+      });
 
-      // Hash password
-      const hashedPassword = await hashPassword(password);
+      return { user, business: createdBusiness };
+    });
 
-      // Create user and business in transaction
-      const result = await prisma.$transaction(async (tx) => {
-        // Create user
-        const user = await tx.user.create({
-          data: {
-            email,
-            hashedPassword,
-            role: "BUSINESS_OWNER",
-          },
-          select: {
-            id: true,
-            email: true,
-            role: true,
-            isActive: true,
-            createdAt: true,
-          },
-        });
+    return result;
+  } catch (error) {
+    logger.error("Registration service error:", error);
+    throw error;
+  }
+};
 
-        // Create associated business
-        const createdBusiness = await tx.business.create({
-          data: {
-            name: business.name,
-            description: business.description,
-            userId: user.id,
-          },
+export const loginUser = async (data) => {
+  const { email, password } = data;
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: {
+        business: {
           select: {
             id: true,
             name: true,
-            description: true,
           },
-        });
+        },
+      },
+    });
 
-        return { user, business: createdBusiness };
-      });
-
-      return result;
-    } catch (error) {
-      logger.error("Registration error:", error);
-
-      if (error.message === "EMAIL_EXISTS") {
-        throw { type: "EMAIL_EXISTS", message: "Email already registered" };
-      }
-
-      throw { type: "SERVER_ERROR", message: "Registration failed" };
+    if (!user) {
+      throw { type: "INVALID_CREDENTIALS", message: "Invalid credentials" };
     }
+
+    const isValidPassword = await bcrypt.compare(password, user.hashedPassword);
+    if (!isValidPassword) {
+      throw { type: "INVALID_CREDENTIALS", message: "Invalid credentials" };
+    }
+
+    if (!user.isActive) {
+      throw { type: "ACCOUNT_INACTIVE", message: "Account is inactive" };
+    }
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+        businessId: user.business?.id,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    const userData = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      business: user.business,
+    };
+
+    return {
+      user: userData,
+      token,
+    };
+  } catch (error) {
+    logger.error("Login service error:", error);
+    throw error;
   }
-}
+};
